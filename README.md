@@ -1,52 +1,65 @@
-- # macOS-GKI-build
-  A simple script with necessary dependencies to build standard GKI kernel natively on macOS
+# macOS GKI Tools
 
-  This directory contains host-only shims for building the arm64 GKI kernel with
-  native macOS tools and Homebrew LLVM, without Bazel.
+Tiny macOS helper scripts for building and packing an Android arm64 GKI kernel.
+They do not manage kernel config. Edit defconfig/fragments in your kernel tree
+yourself.
 
-  ## Prerequisites
+## Requirements
 
-  - Xcode Command Line Tools or Xcode
-  - Homebrew LLVM at `/opt/homebrew/opt/llvm`
-  - Homebrew OpenSSL at `/opt/homebrew/opt/openssl@3`
-  - Homebrew `dtc`, `lz4`, and GNU `sed` (`gsed`)
-  - The repository `prebuilts/build-tools/darwin-x86/bin` tools
+```sh
+brew install llvm openssl@3 dtc lz4 gnu-sed zip
+```
 
-  ## Build
+Default paths:
 
-  ```sh
-  tools/build-gki-macos.sh
-  ```
+```sh
+LLVM_DIR=/opt/homebrew/opt/llvm
+OPENSSL_DIR=/opt/homebrew/opt/openssl@3
+BREW_BIN=/opt/homebrew/bin
+```
 
-  By default this builds:
+## Build
 
-  ```sh
-  gki_defconfig Image.gz Image.lz4
-  ```
+```sh
+tools/build-gki-macos.sh
+```
 
-  The output directory defaults to:
+Default targets:
 
-  ```sh
-  out/macos-gki
-  ```
+```sh
+Image.gz Image.lz4
+```
 
-  The script automatically passes `-jN`, where `N` is the detected logical CPU
-  count. Override paths, jobs, or targets when needed:
+Useful overrides:
 
-  ```sh
-  JOBS=8 OUT_DIR=/tmp/gki-out tools/build-gki-macos.sh Image.gz
-  tools/build-gki-macos.sh -j8 Image.gz
-  LLVM_DIR=/opt/homebrew/opt/llvm OPENSSL_DIR=/opt/homebrew/opt/openssl@3 tools/build-gki-macos.sh
-  ```
+```sh
+JOBS=8 tools/build-gki-macos.sh
+OUT_DIR=/tmp/gki-out tools/build-gki-macos.sh Image.gz
+GKI_LOCALVERSION_SUFFIX=-MyKernel tools/build-gki-macos.sh
+```
 
-  ## Notes
+Outputs:
 
-  Kbuild host tools assume Linux-flavored headers and GNU userland in a few
-  places. The shims here provide only the narrow compatibility layer needed on
-  macOS:
+```sh
+out/macos-gki/arch/arm64/boot/Image.gz
+out/macos-gki/arch/arm64/boot/Image.lz4
+out/macos-gki-dist/manifest.txt
+```
 
-  - `elf.h`
-  - `endian.h`
-  - selected `asm/` UAPI wrappers used before generated headers exist
-  - `unistd.h` UUID typedef isolation
-  - `sed` wrapper to GNU sed
+## Pack
+
+```sh
+ANYKERNEL3_DIR=/path/to/AnyKernel3 tools/package-anykernel3.sh
+```
+
+If `out/anykernel3-macos-gki` already has AnyKernel3 files, the script reuses
+that as a template.
+
+Output:
+
+```sh
+out/macos-gki-anykernel3.zip
+```
+
+The generated zip replaces only the boot kernel image. It does not include or
+flash vendor modules.

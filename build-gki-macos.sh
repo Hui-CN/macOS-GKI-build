@@ -1,9 +1,10 @@
 #!/bin/sh
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: MIT
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT_DIR=${OUT_DIR:-"$ROOT_DIR/out/macos-gki"}
+DIST_DIR=${DIST_DIR:-"$ROOT_DIR/out/macos-gki-dist"}
 LLVM_DIR=${LLVM_DIR:-/opt/homebrew/opt/llvm}
 OPENSSL_DIR=${OPENSSL_DIR:-/opt/homebrew/opt/openssl@3}
 BREW_BIN=${BREW_BIN:-/opt/homebrew/bin}
@@ -65,7 +66,11 @@ require_file "$MACOS_INCLUDE_DIR/endian.h"
 export PATH="$MACOS_BIN_DIR:$LLVM_DIR/bin:$BREW_BIN:$HOST_TOOLS_DIR:$PATH"
 export MAKE="$HOST_TOOLS_DIR/make"
 
-GKI_KERNELRELEASE=${GKI_KERNELRELEASE:-6.6.129-android15-8-4k-AsLoKeExp-v1-DEV}
+GKI_LOCALVERSION_SUFFIX=${GKI_LOCALVERSION_SUFFIX:-}
+GKI_KERNELRELEASE=${GKI_KERNELRELEASE:-}
+DEFCONFIG=${DEFCONFIG:-wonder_gki_defconfig}
+FRAGMENT_CONFIG=${FRAGMENT_CONFIG:-"$ROOT_DIR/common/arch/arm64/configs/wonder.fragment"}
+BASE_DEFCONFIG=${BASE_DEFCONFIG:-"$ROOT_DIR/common/arch/arm64/configs/gki_defconfig"}
 ANDROID_BRANCH=${ANDROID_BRANCH:-$(sed -n 's/^BRANCH=//p' "$ROOT_DIR/common/build.config.common" | head -n 1)}
 KMI_GENERATION=${KMI_GENERATION:-$(sed -n 's/^KMI_GENERATION=//p' "$ROOT_DIR/common/build.config.common" | head -n 1)}
 ANDROID_RELEASE=
@@ -90,10 +95,12 @@ if [ -n "$ANDROID_RELEASE" ]; then
 		KMI_LOCALVERSION="-$ANDROID_RELEASE"
 	fi
 	mkdir -p "$OUT_DIR"
-	printf '%s\n' "$KMI_LOCALVERSION" > "$OUT_DIR/localversion"
+	if [ -z "$GKI_KERNELRELEASE" ]; then
+		printf '%s\n' "$KMI_LOCALVERSION" > "$OUT_DIR/localversion"
+	fi
 fi
 
-[ "$#" -gt 0 ] || set -- gki_defconfig Image.gz Image.lz4
+[ "$#" -gt 0 ] || set -- Image.gz Image.lz4
 
 if [ -n "${JOBS:-}" ]; then
 	case "$JOBS" in
@@ -102,22 +109,75 @@ if [ -n "${JOBS:-}" ]; then
 		exit 1
 		;;
 	esac
+	MAKE_JOBS_OPT="-j$JOBS"
 	set -- "-j$JOBS" "$@"
-elif ! has_jobs_arg "$@"; then
-	set -- "-j$(detect_jobs)" "$@"
+else
+	MAKE_JOBS_OPT="-j$(detect_jobs)"
+	if ! has_jobs_arg "$@"; then
+		set -- "$MAKE_JOBS_OPT" "$@"
+	fi
 fi
 
-exec "$HOST_TOOLS_DIR/make" -C "$ROOT_DIR/common" O="$OUT_DIR" \
-	ARCH=arm64 \
-	LLVM=1 \
-	LLVM_IAS=1 \
-	HOSTCC="$LLVM_DIR/bin/clang" \
-	HOSTCXX="$LLVM_DIR/bin/clang++" \
-	HOSTLD="$LLVM_DIR/bin/clang" \
-	HOSTAR="$LLVM_DIR/bin/llvm-ar" \
-	HOSTCFLAGS="-I$MACOS_INCLUDE_DIR -I$OPENSSL_DIR/include ${HOSTCFLAGS:-}" \
-	HOSTLDFLAGS="-L$OPENSSL_DIR/lib ${HOSTLDFLAGS:-}" \
-	SED="$BREW_BIN/gsed" \
-	DTC="$BREW_BIN/dtc" \
-	KERNELRELEASE="$GKI_KERNELRELEASE" \
-	"$@"
+run_make() {
+	"$HOST_TOOLS_DIR/make" -C "$ROOT_DIR/common" O="$OUT_DIR" \
+		ARCH=arm64 \
+		LLVM=1 \
+		LLVM_IAS=1 \
+		HOSTCC="$LLVM_DIR/bin/clang" \
+		HOSTCXX="$LLVM_DIR/bin/clang++" \
+		HOSTLD="$LLVM_DIR/bin/clang" \
+		HOSTAR="$LLVM_DIR/bin/llvm-ar" \
+		HOSTCFLAGS="-I$MACOS_INCLUDE_DIR -I$OPENSSL_DIR/include ${HOSTCFLAGS:-}" \
+		HOSTLDFLAGS="-L$OPENSSL_DIR/lib ${HOSTLDFLAGS:-}" \
+		SED="$BREW_BIN/gsed" \
+		DTC="$BREW_BIN/dtc" \
+		LOCALVERSION="$GKI_LOCALVERSION_SUFFIX" \
+		${GKI_KERNELRELEASE:+KERNELRELEASE=$GKI_KERNELRELEASE} \
+		"$@"
+}
+
+prepare_defconfig() {
+	require_file "$BASE_DEFCONFIG"
+	require_file "$FRAGMENT_CONFIG"
+	mkdir -p "$OUT_DIR"
+	(
+		cd "$ROOT_DIR/common"
+		KCONFIG_CONFIG="$OUT_DIR/.config" \
+			ARCH=arm64 \
+			LLVM=1 \
+			LLVM_IAS=1 \
+			HOSTCC="$LLVM_DIR/bin/clang" \
+			HOSTCXX="$LLVM_DIR/bin/clang++" \
+			HOSTLD="$LLVM_DIR/bin/clang" \
+			HOSTAR="$LLVM_DIR/bin/llvm-ar" \
+			HOSTCFLAGS="-I$MACOS_INCLUDE_DIR -I$OPENSSL_DIR/include ${HOSTCFLAGS:-}" \
+			HOSTLDFLAGS="-L$OPENSSL_DIR/lib ${HOSTLDFLAGS:-}" \
+			SED="$BREW_BIN/gsed" \
+			DTC="$BREW_BIN/dtc" \
+			LOCALVERSION="$GKI_LOCALVERSION_SUFFIX" \
+			"$ROOT_DIR/common/scripts/kconfig/merge_config.sh" \
+			-r -O "$OUT_DIR" "$BASE_DEFCONFIG" "$FRAGMENT_CONFIG"
+	)
+}
+
+write_dist_manifest() {
+	require_file "$OUT_DIR/include/config/kernel.release"
+	mkdir -p "$DIST_DIR"
+	[ ! -f "$OUT_DIR/arch/arm64/boot/Image.gz" ] || cp -f "$OUT_DIR/arch/arm64/boot/Image.gz" "$DIST_DIR/"
+	[ ! -f "$OUT_DIR/arch/arm64/boot/Image.lz4" ] || cp -f "$OUT_DIR/arch/arm64/boot/Image.lz4" "$DIST_DIR/"
+	cp -f "$OUT_DIR/include/config/kernel.release" "$DIST_DIR/"
+	{
+		printf 'kernel_release=%s\n' "$(cat "$OUT_DIR/include/config/kernel.release")"
+		printf 'localversion_suffix=%s\n' "$GKI_LOCALVERSION_SUFFIX"
+		[ ! -f "$DIST_DIR/Image.gz" ] || printf 'image_gz=%s\n' "$DIST_DIR/Image.gz"
+		[ ! -f "$DIST_DIR/Image.lz4" ] || printf 'image_lz4=%s\n' "$DIST_DIR/Image.lz4"
+	} > "$DIST_DIR/manifest.txt"
+}
+
+prepare_defconfig
+run_make "$@"
+
+if [ -f "$OUT_DIR/include/config/kernel.release" ]; then
+	write_dist_manifest
+	printf '%s\n' "$DIST_DIR/manifest.txt"
+fi
