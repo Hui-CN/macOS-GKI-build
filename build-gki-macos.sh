@@ -5,12 +5,12 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT_DIR=${OUT_DIR:-"$ROOT_DIR/out/macos-gki"}
 DIST_DIR=${DIST_DIR:-"$ROOT_DIR/out/macos-gki-dist"}
-LLVM_DIR=${LLVM_DIR:-/opt/homebrew/opt/llvm}
 OPENSSL_DIR=${OPENSSL_DIR:-/opt/homebrew/opt/openssl@3}
 BREW_BIN=${BREW_BIN:-/opt/homebrew/bin}
 HOST_TOOLS_DIR="$ROOT_DIR/prebuilts/build-tools/darwin-x86/bin"
 MACOS_INCLUDE_DIR="$ROOT_DIR/tools/macos-kbuild/include"
 MACOS_BIN_DIR="$ROOT_DIR/tools/macos-kbuild/bin"
+SDKROOT=${SDKROOT:-$(xcrun --show-sdk-path)}
 
 require_exe() {
 	if [ ! -x "$1" ]; then
@@ -49,11 +49,20 @@ has_jobs_arg() {
 	return 1
 }
 
+ACK_CLANG_VERSION=${ACK_CLANG_VERSION:-$(sed -n 's/^CLANG_VERSION=//p' "$ROOT_DIR/common/build.config.constants" | head -n 1)}
+LLVM_DIR=${LLVM_DIR:-"$ROOT_DIR/prebuilts/clang/host/darwin-x86/clang-$ACK_CLANG_VERSION"}
+
 require_exe "$LLVM_DIR/bin/clang"
 require_exe "$LLVM_DIR/bin/clang++"
+require_exe "$LLVM_DIR/bin/ld.lld"
 require_exe "$LLVM_DIR/bin/llvm-ar"
+require_exe "$LLVM_DIR/bin/llvm-nm"
+require_exe "$LLVM_DIR/bin/llvm-objcopy"
+require_exe "$LLVM_DIR/bin/llvm-objdump"
+require_exe "$LLVM_DIR/bin/llvm-strip"
 require_file "$OPENSSL_DIR/include/openssl/opensslv.h"
 require_file "$OPENSSL_DIR/lib/libcrypto.dylib"
+require_file "$SDKROOT/usr/include/sys/types.h"
 require_exe "$HOST_TOOLS_DIR/make"
 require_exe "$HOST_TOOLS_DIR/bison"
 require_exe "$HOST_TOOLS_DIR/flex"
@@ -73,6 +82,10 @@ FRAGMENT_CONFIG=${FRAGMENT_CONFIG:-"$ROOT_DIR/common/arch/arm64/configs/wonder.f
 BASE_DEFCONFIG=${BASE_DEFCONFIG:-"$ROOT_DIR/common/arch/arm64/configs/gki_defconfig"}
 ANDROID_BRANCH=${ANDROID_BRANCH:-$(sed -n 's/^BRANCH=//p' "$ROOT_DIR/common/build.config.common" | head -n 1)}
 KMI_GENERATION=${KMI_GENERATION:-$(sed -n 's/^KMI_GENERATION=//p' "$ROOT_DIR/common/build.config.common" | head -n 1)}
+case " ${KCFLAGS:-} " in
+*" -D__ANDROID_COMMON_KERNEL__ "*) ;;
+*) KCFLAGS="${KCFLAGS:-} -D__ANDROID_COMMON_KERNEL__" ;;
+esac
 ANDROID_RELEASE=
 case "$ANDROID_BRANCH" in
 android-mainline)
@@ -123,12 +136,20 @@ run_make() {
 		ARCH=arm64 \
 		LLVM=1 \
 		LLVM_IAS=1 \
+		CC="$LLVM_DIR/bin/clang" \
+		LD="$LLVM_DIR/bin/ld.lld" \
+		AR="$LLVM_DIR/bin/llvm-ar" \
+		NM="$LLVM_DIR/bin/llvm-nm" \
+		OBJCOPY="$LLVM_DIR/bin/llvm-objcopy" \
+		OBJDUMP="$LLVM_DIR/bin/llvm-objdump" \
+		STRIP="$LLVM_DIR/bin/llvm-strip" \
 		HOSTCC="$LLVM_DIR/bin/clang" \
 		HOSTCXX="$LLVM_DIR/bin/clang++" \
 		HOSTLD="$LLVM_DIR/bin/clang" \
 		HOSTAR="$LLVM_DIR/bin/llvm-ar" \
-		HOSTCFLAGS="-I$MACOS_INCLUDE_DIR -I$OPENSSL_DIR/include ${HOSTCFLAGS:-}" \
-		HOSTLDFLAGS="-L$OPENSSL_DIR/lib ${HOSTLDFLAGS:-}" \
+		HOSTCFLAGS="-isysroot $SDKROOT -I$MACOS_INCLUDE_DIR -I$OPENSSL_DIR/include ${HOSTCFLAGS:-}" \
+		HOSTLDFLAGS="-isysroot $SDKROOT -L$OPENSSL_DIR/lib ${HOSTLDFLAGS:-}" \
+		KCFLAGS="$KCFLAGS" \
 		SED="$BREW_BIN/gsed" \
 		DTC="$BREW_BIN/dtc" \
 		LOCALVERSION="$GKI_LOCALVERSION_SUFFIX" \
@@ -146,12 +167,20 @@ prepare_defconfig() {
 			ARCH=arm64 \
 			LLVM=1 \
 			LLVM_IAS=1 \
+			CC="$LLVM_DIR/bin/clang" \
+			LD="$LLVM_DIR/bin/ld.lld" \
+			AR="$LLVM_DIR/bin/llvm-ar" \
+			NM="$LLVM_DIR/bin/llvm-nm" \
+			OBJCOPY="$LLVM_DIR/bin/llvm-objcopy" \
+			OBJDUMP="$LLVM_DIR/bin/llvm-objdump" \
+			STRIP="$LLVM_DIR/bin/llvm-strip" \
 			HOSTCC="$LLVM_DIR/bin/clang" \
 			HOSTCXX="$LLVM_DIR/bin/clang++" \
 			HOSTLD="$LLVM_DIR/bin/clang" \
 			HOSTAR="$LLVM_DIR/bin/llvm-ar" \
-			HOSTCFLAGS="-I$MACOS_INCLUDE_DIR -I$OPENSSL_DIR/include ${HOSTCFLAGS:-}" \
-			HOSTLDFLAGS="-L$OPENSSL_DIR/lib ${HOSTLDFLAGS:-}" \
+			HOSTCFLAGS="-isysroot $SDKROOT -I$MACOS_INCLUDE_DIR -I$OPENSSL_DIR/include ${HOSTCFLAGS:-}" \
+			HOSTLDFLAGS="-isysroot $SDKROOT -L$OPENSSL_DIR/lib ${HOSTLDFLAGS:-}" \
+			KCFLAGS="$KCFLAGS" \
 			SED="$BREW_BIN/gsed" \
 			DTC="$BREW_BIN/dtc" \
 			LOCALVERSION="$GKI_LOCALVERSION_SUFFIX" \
@@ -168,7 +197,12 @@ write_dist_manifest() {
 	cp -f "$OUT_DIR/include/config/kernel.release" "$DIST_DIR/"
 	{
 		printf 'kernel_release=%s\n' "$(cat "$OUT_DIR/include/config/kernel.release")"
+		printf 'ack_clang_version=%s\n' "$ACK_CLANG_VERSION"
+		printf 'clang_version=%s\n' "$("$LLVM_DIR/bin/clang" --version | sed -n '1p')"
+		printf 'llvm_dir=%s\n' "$LLVM_DIR"
+		printf 'kcflags=%s\n' "$KCFLAGS"
 		printf 'localversion_suffix=%s\n' "$GKI_LOCALVERSION_SUFFIX"
+		[ ! -f "$OUT_DIR/.config" ] || sed -n 's/^\(CONFIG_CC_VERSION_TEXT=.*\)$/\1/p; s/^\(CONFIG_CLANG_VERSION=.*\)$/\1/p; s/^\(CONFIG_ARM64_4K_PAGES=.*\)$/\1/p; s/^\(CONFIG_ARM64_16K_PAGES=.*\)$/\1/p; s/^\(CONFIG_MODULE_FORCE_LOAD=.*\)$/\1/p; s/^\(CONFIG_MODVERSIONS=.*\)$/\1/p; s/^\(CONFIG_MODULE_SIG_PROTECT=.*\)$/\1/p; s/^\(CONFIG_KSU=.*\)$/\1/p' "$OUT_DIR/.config"
 		[ ! -f "$DIST_DIR/Image.gz" ] || printf 'image_gz=%s\n' "$DIST_DIR/Image.gz"
 		[ ! -f "$DIST_DIR/Image.lz4" ] || printf 'image_lz4=%s\n' "$DIST_DIR/Image.lz4"
 	} > "$DIST_DIR/manifest.txt"
